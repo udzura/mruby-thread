@@ -72,9 +72,9 @@ assert('Thread migrates String') do
 end
 
 assert('Thread migrates Symbol') do
-#  a = Thread.new(:context){|a| a}
-#  a.join == :context
-  true
+  z = :context3
+  a = Thread.new(:context){|x| [x, :context2, z] }
+  assert_true a.join == [:context, :context2, :context3]
 end
 
 assert('Thread migrates Array') do

@@ -209,6 +209,23 @@ static mrb_bool is_safe_migratable_simple_value(mrb_state *mrb, mrb_value v, mrb
   return TRUE;
 }
 
+#ifdef MRB_THREAD_COPY_VALUES
+static mrb_irep *mrb_migrate_irep(mrb_state *mrb, mrb_irep *src, mrb_state *mrb2)
+{
+  uint8_t *irep = NULL;
+  size_t binsize = 0;
+  int i;
+  mrb_dump_irep(mrb, src, DUMP_ENDIAN_NAT, &irep, &binsize);
+
+  mrb_irep *ret = mrb_read_irep(mrb2, irep);
+  for (i = 0; i < src->slen; i++) {
+    mrb_sym newsym = migrate_sym(mrb, src->syms[i], mrb2);
+    ret->syms[i] = newsym;
+  }
+  return ret;
+}
+#endif
+
 // based on https://gist.github.com/3066997
 static mrb_value migrate_simple_value(mrb_state *mrb, mrb_value v, mrb_state *mrb2)
 {
@@ -225,16 +242,14 @@ static mrb_value migrate_simple_value(mrb_state *mrb, mrb_value v, mrb_state *mr
     break;
   /* See http://syucream.hatenablog.jp/entry/2016/12/11/162513 */
   case MRB_TT_PROC: {
-    nv = v;
+    /*   nv = v; */
+    /* } break; */
+    struct RProc *rproc = mrb_proc_ptr(v);
+    struct RProc *newproc = mrb_closure_new(mrb2, mrb_migrate_irep(mrb, rproc->body.irep, mrb2));
+    newproc->env = rproc->env;
+    newproc->env->mid = migrate_sym(mrb, rproc->env->mid, mrb2);
+    nv = mrb_obj_value(newproc);
   } break;
-  /*   struct RProc *rproc = mrb_proc_ptr(v); */
-  /*   uint8_t *irep = NULL; */
-  /*   size_t binsize = 0; */
-  /*   mrb_dump_irep(mrb, rproc->body.irep, DUMP_ENDIAN_NAT, &irep, &binsize); */
-  /*   struct RProc *newproc = mrb_closure_new(mrb2, mrb_read_irep(mrb2, irep)); */
-  /*   newproc->env = rproc->env; */
-  /*   nv = mrb_obj_value(newproc); */
-  /* } break; */
   case MRB_TT_FALSE:
   case MRB_TT_TRUE:
   case MRB_TT_FIXNUM:
@@ -326,6 +341,99 @@ static void *mrb_thread_func(void *data)
   return NULL;
 }
 
+void mrb_init_symtbl(mrb_state *);
+void mrb_init_class(mrb_state *);
+void mrb_init_object(mrb_state *);
+void mrb_init_kernel(mrb_state *);
+void mrb_init_comparable(mrb_state *);
+void mrb_init_enumerable(mrb_state *);
+void mrb_init_symbol(mrb_state *);
+void mrb_init_exception(mrb_state *);
+void mrb_init_proc(mrb_state *);
+void mrb_init_string(mrb_state *);
+void mrb_init_array(mrb_state *);
+void mrb_init_hash(mrb_state *);
+void mrb_init_numeric(mrb_state *);
+void mrb_init_range(mrb_state *);
+void mrb_init_gc(mrb_state *);
+void mrb_init_math(mrb_state *);
+void mrb_init_version(mrb_state *);
+void mrb_init_mrblib(mrb_state *);
+#define DONE mrb_gc_arena_restore(mrb, 0);
+void mrb_init_core2(mrb_state *mrb, mrb_state *old_mrb)
+{
+  mrb_init_symtbl(mrb);
+  DONE;
+
+  migrate_all_symbols(old_mrb, mrb);
+  DONE;
+
+  mrb_init_class(mrb);
+  DONE;
+  mrb_init_object(mrb);
+  DONE;
+  mrb_init_kernel(mrb);
+  DONE;
+  mrb_init_comparable(mrb);
+  DONE;
+  mrb_init_enumerable(mrb);
+  DONE;
+
+  mrb_init_symbol(mrb);
+  DONE;
+  mrb_init_exception(mrb);
+  DONE;
+  mrb_init_proc(mrb);
+  DONE;
+  mrb_init_string(mrb);
+  DONE;
+  mrb_init_array(mrb);
+  DONE;
+  mrb_init_hash(mrb);
+  DONE;
+  mrb_init_numeric(mrb);
+  DONE;
+  mrb_init_range(mrb);
+  DONE;
+  mrb_init_gc(mrb);
+  DONE;
+  mrb_init_version(mrb);
+  DONE;
+  mrb_init_mrblib(mrb);
+  DONE;
+}
+#ifndef DISABLE_GEMS
+void mrb_init_mrbgems(mrb_state *);
+#endif
+void mrb_gc_init(mrb_state *, mrb_gc *gc);
+
+mrb_state *mrb_clean_open_allocf(mrb_allocf f, void *ud)
+{
+  static const mrb_state mrb_state_zero = {0};
+  static const struct mrb_context mrb_context_zero = {0};
+  mrb_state *mrb;
+
+  mrb = (mrb_state *)(f)(NULL, NULL, sizeof(mrb_state), ud);
+  if (mrb == NULL)
+    return NULL;
+
+  *mrb = mrb_state_zero;
+  mrb->allocf_ud = ud;
+  mrb->allocf = f;
+  mrb->atexit_stack_len = 0;
+
+  mrb_gc_init(mrb, &mrb->gc);
+  mrb->c = (struct mrb_context *)mrb_malloc(mrb, sizeof(struct mrb_context));
+  *mrb->c = mrb_context_zero;
+  mrb->root_c = mrb->c;
+
+  if (mrb == NULL) {
+    return NULL;
+  }
+
+  return mrb;
+}
+
 static mrb_value mrb_thread_init(mrb_state *mrb, mrb_value self)
 {
   mrb_value proc = mrb_nil_value();
@@ -339,9 +447,19 @@ static mrb_value mrb_thread_init(mrb_state *mrb, mrb_value self)
     int i, l;
     mrb_thread_context *context = (mrb_thread_context *)malloc(sizeof(mrb_thread_context));
     context->mrb_caller = mrb;
-    context->mrb = mrb_open_allocf(mrb->allocf, mrb->allocf_ud);
-    migrate_all_symbols(mrb, context->mrb);
-    context->proc = mrb_proc_new(mrb, mrb_proc_ptr(proc)->body.irep);
+    mrb_state *mrb2 = mrb_clean_open_allocf(mrb->allocf, mrb->allocf_ud);
+    mrb_init_core2(mrb2, mrb);
+#ifndef DISABLE_GEMS
+    mrb_init_mrbgems(mrb2);
+    mrb_gc_arena_restore(mrb2, 0);
+#endif
+    context->mrb = mrb2;
+    struct RProc *rproc = mrb_proc_ptr(proc);
+    struct RProc *newproc =
+        mrb_closure_new(context->mrb, mrb_migrate_irep(mrb, rproc->body.irep, context->mrb));
+    newproc->env = rproc->env;
+    newproc->env->mid = migrate_sym(mrb, rproc->env->mid, context->mrb);
+    context->proc = newproc;
     context->proc->target_class = context->mrb->object_class;
     context->argc = argc;
     context->argv = calloc(sizeof(mrb_value), context->argc);

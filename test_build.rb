@@ -19,6 +19,7 @@ MRuby::Build.new do |conf|
   conf.linker.library_paths << %w(/usr/local/lib)
   conf.linker.libraries << ['pthread']
   conf.gembox 'default'
+  conf.enable_debug
   conf.enable_test
   conf.gem File.dirname(__FILE__)
 end
