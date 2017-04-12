@@ -14,7 +14,7 @@ end
 MRuby::Build.new do |conf|
   MRBGEMS_ROOT = "/usr/local/mrblib"
   toolchain :clang
-  conf.cc.defines += %w(ENABLE_READLINE)
+  conf.cc.defines += %w(ENABLE_READLINE MRB_THREAD_COPY_VALUES)
   conf.cc.include_paths << %w(/usr/local/include)
   conf.linker.library_paths << %w(/usr/local/lib)
   conf.linker.libraries << ['pthread']
