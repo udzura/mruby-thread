@@ -95,3 +95,10 @@ assert('Thread migrates Proc') do
   a.join == 1
 end
 
+assert('Thread migrates Proc with REnv') do
+  v = 0
+  l = lambda { v += 1 }
+  a = Thread.new(l){|l| l.call }
+  a.join
+  assert_equal 1, v
+end

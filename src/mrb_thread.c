@@ -1,13 +1,18 @@
 #include <mruby.h>
-#include <mruby/string.h>
 #include <mruby/array.h>
-#include <mruby/hash.h>
-#include <mruby/range.h>
-#include <mruby/proc.h>
-#include <mruby/data.h>
 #include <mruby/class.h>
+#include <mruby/data.h>
+#include <mruby/hash.h>
+#include <mruby/proc.h>
+#include <mruby/range.h>
+#include <mruby/string.h>
 #include <mruby/value.h>
 #include <mruby/variable.h>
+
+#ifdef MRB_THREAD_COPY_VALUES
+#include <mruby/dump.h>
+#endif
+
 #include <string.h>
 #ifndef _MSC_VER
 #include <strings.h>
@@ -35,28 +40,30 @@ See also https://github.com/mruby/mruby/commit/79a621dd739faf4cc0958e11d6a887331
 
 typedef struct {
   int argc;
-  mrb_value* argv;
-  struct RProc* proc;
+  mrb_value *argv;
+  struct RProc *proc;
   pthread_t thread;
-  mrb_state* mrb_caller;
-  mrb_state* mrb;
+  mrb_state *mrb_caller;
+  mrb_state *mrb;
   mrb_value result;
   mrb_bool alive;
 } mrb_thread_context;
 
-static void
-mrb_thread_context_free(mrb_state *mrb, void *p) {
+static void mrb_thread_context_free(mrb_state *mrb, void *p)
+{
   if (p) {
-    mrb_thread_context* context = (mrb_thread_context*) p;
-    if (context->mrb && context->mrb != mrb) mrb_close(context->mrb);
+    mrb_thread_context *context = (mrb_thread_context *)p;
+    if (context->mrb && context->mrb != mrb)
+      mrb_close(context->mrb);
     pthread_kill(context->thread, SIGINT);
-    if (context->argv) free(context->argv);
+    if (context->argv)
+      free(context->argv);
     free(p);
   }
 }
 
 static const struct mrb_data_type mrb_thread_context_type = {
-  "mrb_thread_context", mrb_thread_context_free,
+    "mrb_thread_context", mrb_thread_context_free,
 };
 
 typedef struct {
@@ -64,30 +71,30 @@ typedef struct {
   int locked;
 } mrb_mutex_context;
 
-static void
-mrb_mutex_context_free(mrb_state *mrb, void *p) {
+static void mrb_mutex_context_free(mrb_state *mrb, void *p)
+{
   if (p) {
-    mrb_mutex_context* context = (mrb_mutex_context*) p;
+    mrb_mutex_context *context = (mrb_mutex_context *)p;
     pthread_mutex_destroy(&context->mutex);
     free(p);
   }
 }
 
 static const struct mrb_data_type mrb_mutex_context_type = {
-  "mrb_mutex_context", mrb_mutex_context_free,
+    "mrb_mutex_context", mrb_mutex_context_free,
 };
 
 typedef struct {
   pthread_mutex_t mutex;
   pthread_mutex_t queue_lock;
-  mrb_state* mrb;
+  mrb_state *mrb;
   mrb_value queue;
 } mrb_queue_context;
 
-static void
-mrb_queue_context_free(mrb_state *mrb, void *p) {
+static void mrb_queue_context_free(mrb_state *mrb, void *p)
+{
   if (p) {
-    mrb_queue_context* context = (mrb_queue_context*) p;
+    mrb_queue_context *context = (mrb_queue_context *)p;
     pthread_mutex_destroy(&context->mutex);
     pthread_mutex_destroy(&context->queue_lock);
     free(p);
@@ -95,21 +102,19 @@ mrb_queue_context_free(mrb_state *mrb, void *p) {
 }
 
 static const struct mrb_data_type mrb_queue_context_type = {
-  "mrb_queue_context", mrb_queue_context_free,
+    "mrb_queue_context", mrb_queue_context_free,
 };
 
 static mrb_value migrate_simple_value(mrb_state *mrb, mrb_value v, mrb_state *mrb2);
 
-static mrb_sym
-migrate_sym(mrb_state *mrb, mrb_sym sym, mrb_state *mrb2)
+static mrb_sym migrate_sym(mrb_state *mrb, mrb_sym sym, mrb_state *mrb2)
 {
   mrb_int len;
   const char *p = mrb_sym2name_len(mrb, sym, &len);
   return mrb_intern_static(mrb2, p, len);
 }
 
-static void
-migrate_all_symbols(mrb_state *mrb, mrb_state *mrb2)
+static void migrate_all_symbols(mrb_state *mrb, mrb_state *mrb2)
 {
   mrb_sym i;
   for (i = 1; i < mrb->symidx + 1; i++) {
@@ -117,15 +122,14 @@ migrate_all_symbols(mrb_state *mrb, mrb_state *mrb2)
   }
 }
 
-static void
-migrate_simple_iv(mrb_state *mrb, mrb_value v, mrb_state *mrb2, mrb_value v2)
+static void migrate_simple_iv(mrb_state *mrb, mrb_value v, mrb_state *mrb2, mrb_value v2)
 {
   mrb_value ivars = mrb_obj_instance_variables(mrb, v);
   struct RArray *a = mrb_ary_ptr(ivars);
   mrb_value iv;
   mrb_int i;
 
-  for (i=0; i<a->len; i++) {
+  for (i = 0; i < a->len; i++) {
     mrb_sym sym = mrb_symbol(a->ptr[i]);
     mrb_sym sym2 = migrate_sym(mrb, sym, mrb2);
     iv = mrb_iv_get(mrb, v, sym);
@@ -133,15 +137,9 @@ migrate_simple_iv(mrb_state *mrb, mrb_value v, mrb_state *mrb2, mrb_value v2)
   }
 }
 
-static mrb_bool
-is_safe_migratable_datatype(const mrb_data_type *type)
+static mrb_bool is_safe_migratable_datatype(const mrb_data_type *type)
 {
-  static const char *known_type_names[] = {
-    "mrb_mutex_context",
-    "mrb_queue_context",
-    "IO",
-    NULL
-  };
+  static const char *known_type_names[] = {"mrb_mutex_context", "mrb_queue_context", "IO", NULL};
   int i;
   for (i = 0; known_type_names[i]; i++) {
     if (strcmp(type->struct_name, known_type_names[i]) == 0)
@@ -150,21 +148,18 @@ is_safe_migratable_datatype(const mrb_data_type *type)
   return FALSE;
 }
 
-static mrb_bool
-is_safe_migratable_simple_value(mrb_state *mrb, mrb_value v, mrb_state *mrb2)
+static mrb_bool is_safe_migratable_simple_value(mrb_state *mrb, mrb_value v, mrb_state *mrb2)
 {
   switch (mrb_type(v)) {
   case MRB_TT_OBJECT:
-  case MRB_TT_EXCEPTION:
-    {
-      struct RObject *o = mrb_obj_ptr(v);
-      mrb_value path = mrb_class_path(mrb, o->c);
+  case MRB_TT_EXCEPTION: {
+    struct RObject *o = mrb_obj_ptr(v);
+    mrb_value path = mrb_class_path(mrb, o->c);
 
-      if (mrb_nil_p(path) || !mrb_class_defined(mrb2, RSTRING_PTR(path))) {
-        return FALSE;
-      }
+    if (mrb_nil_p(path) || !mrb_class_defined(mrb2, RSTRING_PTR(path))) {
+      return FALSE;
     }
-    break;
+  } break;
   case MRB_TT_PROC:
   case MRB_TT_FALSE:
   case MRB_TT_TRUE:
@@ -173,42 +168,36 @@ is_safe_migratable_simple_value(mrb_state *mrb, mrb_value v, mrb_state *mrb2)
   case MRB_TT_FLOAT:
   case MRB_TT_STRING:
     break;
-  case MRB_TT_RANGE:
-    {
-      struct RRange *r = MRB_RANGE_PTR(v);
-      if (!is_safe_migratable_simple_value(mrb, r->edges->beg, mrb2) ||
-          !is_safe_migratable_simple_value(mrb, r->edges->end, mrb2)) {
+  case MRB_TT_RANGE: {
+    struct RRange *r = MRB_RANGE_PTR(v);
+    if (!is_safe_migratable_simple_value(mrb, r->edges->beg, mrb2) ||
+        !is_safe_migratable_simple_value(mrb, r->edges->end, mrb2)) {
+      return FALSE;
+    }
+  } break;
+  case MRB_TT_ARRAY: {
+    struct RArray *a0;
+    int i;
+    a0 = mrb_ary_ptr(v);
+    for (i = 0; i < a0->len; i++) {
+      if (!is_safe_migratable_simple_value(mrb, a0->ptr[i], mrb2)) {
         return FALSE;
       }
     }
-    break;
-  case MRB_TT_ARRAY:
-    {
-      struct RArray *a0;
-      int i;
-      a0 = mrb_ary_ptr(v);
-      for (i=0; i<a0->len; i++) {
-        if (!is_safe_migratable_simple_value(mrb, a0->ptr[i], mrb2)) {
-          return FALSE;
-        }
+  } break;
+  case MRB_TT_HASH: {
+    mrb_value ka;
+    int i, l;
+    ka = mrb_hash_keys(mrb, v);
+    l = RARRAY_LEN(ka);
+    for (i = 0; i < l; i++) {
+      mrb_value k = mrb_ary_entry(ka, i);
+      if (!is_safe_migratable_simple_value(mrb, k, mrb2) ||
+          !is_safe_migratable_simple_value(mrb, mrb_hash_get(mrb, v, k), mrb2)) {
+        return FALSE;
       }
     }
-    break;
-  case MRB_TT_HASH:
-    {
-      mrb_value ka;
-      int i, l;
-      ka = mrb_hash_keys(mrb, v);
-      l = RARRAY_LEN(ka);
-      for (i = 0; i < l; i++) {
-        mrb_value k = mrb_ary_entry(ka, i);
-        if (!is_safe_migratable_simple_value(mrb, k, mrb2) ||
-            !is_safe_migratable_simple_value(mrb, mrb_hash_get(mrb, v, k), mrb2)) {
-          return FALSE;
-        }
-      }
-    }
-    break;
+  } break;
   case MRB_TT_DATA:
     if (!is_safe_migratable_datatype(DATA_TYPE(v)))
       return FALSE;
@@ -221,21 +210,31 @@ is_safe_migratable_simple_value(mrb_state *mrb, mrb_value v, mrb_state *mrb2)
 }
 
 // based on https://gist.github.com/3066997
-static mrb_value
-migrate_simple_value(mrb_state *mrb, mrb_value v, mrb_state *mrb2) {
+static mrb_value migrate_simple_value(mrb_state *mrb, mrb_value v, mrb_state *mrb2)
+{
   mrb_value nv;
 
   switch (mrb_type(v)) {
 #ifdef MRB_THREAD_COPY_VALUES
   case MRB_TT_OBJECT:
-  case MRB_TT_EXCEPTION:
-    {
-      struct RClass *c = mrb_obj_class(mrb, v);
-      nv = mrb_obj_value(mrb_obj_alloc(mrb2, mrb_type(v), c));
-    }
+  case MRB_TT_EXCEPTION: {
+    struct RClass *c = mrb_obj_class(mrb, v);
+    nv = mrb_obj_value(mrb_obj_alloc(mrb2, mrb_type(v), c));
+  }
     migrate_simple_iv(mrb, v, mrb2, nv);
     break;
-  case MRB_TT_PROC:
+  /* See http://syucream.hatenablog.jp/entry/2016/12/11/162513 */
+  case MRB_TT_PROC: {
+    nv = v;
+  } break;
+  /*   struct RProc *rproc = mrb_proc_ptr(v); */
+  /*   uint8_t *irep = NULL; */
+  /*   size_t binsize = 0; */
+  /*   mrb_dump_irep(mrb, rproc->body.irep, DUMP_ENDIAN_NAT, &irep, &binsize); */
+  /*   struct RProc *newproc = mrb_closure_new(mrb2, mrb_read_irep(mrb2, irep)); */
+  /*   newproc->env = rproc->env; */
+  /*   nv = mrb_obj_value(newproc); */
+  /* } break; */
   case MRB_TT_FALSE:
   case MRB_TT_TRUE:
   case MRB_TT_FIXNUM:
@@ -250,64 +249,57 @@ migrate_simple_value(mrb_state *mrb, mrb_value v, mrb_state *mrb2) {
   case MRB_TT_STRING:
     nv = mrb_str_new(mrb2, RSTRING_PTR(v), RSTRING_LEN(v));
     break;
-  case MRB_TT_RANGE:
-    {
-      struct RRange *r = MRB_RANGE_PTR(v);
-      nv = mrb_range_new(mrb2,
-                         migrate_simple_value(mrb, r->edges->beg, mrb2),
-                         migrate_simple_value(mrb, r->edges->end, mrb2),
-                         r->excl);
-    }
-    break;
-  case MRB_TT_ARRAY:
-    {
-      struct RArray *a0, *a1;
-      int i;
+  case MRB_TT_RANGE: {
+    struct RRange *r = MRB_RANGE_PTR(v);
+    nv = mrb_range_new(mrb2, migrate_simple_value(mrb, r->edges->beg, mrb2),
+                       migrate_simple_value(mrb, r->edges->end, mrb2), r->excl);
+  } break;
+  case MRB_TT_ARRAY: {
+    struct RArray *a0, *a1;
+    int i;
 
-      a0 = mrb_ary_ptr(v);
-      nv = mrb_ary_new_capa(mrb2, a0->len);
-      a1 = mrb_ary_ptr(nv);
-      for (i=0; i<a0->len; i++) {
-        int ai = mrb_gc_arena_save(mrb2);
-        a1->ptr[i] = migrate_simple_value(mrb, a0->ptr[i], mrb2);
-        a1->len++;
-        mrb_gc_arena_restore(mrb2, ai);
-      }
+    a0 = mrb_ary_ptr(v);
+    nv = mrb_ary_new_capa(mrb2, a0->len);
+    a1 = mrb_ary_ptr(nv);
+    for (i = 0; i < a0->len; i++) {
+      int ai = mrb_gc_arena_save(mrb2);
+      a1->ptr[i] = migrate_simple_value(mrb, a0->ptr[i], mrb2);
+      a1->len++;
+      mrb_gc_arena_restore(mrb2, ai);
     }
-    break;
-  case MRB_TT_HASH:
-    {
-      mrb_value ka;
-      int i, l;
+  } break;
+  case MRB_TT_HASH: {
+    mrb_value ka;
+    int i, l;
 
-      nv = mrb_hash_new(mrb2);
-      ka = mrb_hash_keys(mrb, v);
-      l = RARRAY_LEN(ka);
-      for (i = 0; i < l; i++) {
-        int ai = mrb_gc_arena_save(mrb2);
-        mrb_value k = migrate_simple_value(mrb, mrb_ary_entry(ka, i), mrb2);
-        mrb_value o = migrate_simple_value(mrb, mrb_hash_get(mrb, v, k), mrb2);
-        mrb_hash_set(mrb2, nv, k, o);
-        mrb_gc_arena_restore(mrb2, ai);
-      }
+    nv = mrb_hash_new(mrb2);
+    ka = mrb_hash_keys(mrb, v);
+    l = RARRAY_LEN(ka);
+    for (i = 0; i < l; i++) {
+      int ai = mrb_gc_arena_save(mrb2);
+      mrb_value k = migrate_simple_value(mrb, mrb_ary_entry(ka, i), mrb2);
+      mrb_value o = migrate_simple_value(mrb, mrb_hash_get(mrb, v, k), mrb2);
+      mrb_hash_set(mrb2, nv, k, o);
+      mrb_gc_arena_restore(mrb2, ai);
     }
+  }
     migrate_simple_iv(mrb, v, mrb2, nv);
     break;
 #else
-    case MRB_TT_OBJECT:
-    case MRB_TT_EXCEPTION:
-    case MRB_TT_PROC:
-    case MRB_TT_FALSE:
-    case MRB_TT_TRUE:
-    case MRB_TT_FIXNUM:
-    case MRB_TT_SYMBOL:
-    case MRB_TT_FLOAT:
-    case MRB_TT_STRING:
-    case MRB_TT_RANGE:
-    case MRB_TT_ARRAY:
-    case MRB_TT_HASH:
-      nv = v;
-      break;
+  case MRB_TT_OBJECT:
+  case MRB_TT_EXCEPTION:
+  case MRB_TT_PROC:
+  case MRB_TT_FALSE:
+  case MRB_TT_TRUE:
+  case MRB_TT_FIXNUM:
+  case MRB_TT_SYMBOL:
+  case MRB_TT_FLOAT:
+  case MRB_TT_STRING:
+  case MRB_TT_RANGE:
+  case MRB_TT_ARRAY:
+  case MRB_TT_HASH:
+    nv = v;
+    break;
 #endif
   case MRB_TT_DATA:
     if (!is_safe_migratable_datatype(DATA_TYPE(v)))
@@ -324,35 +316,35 @@ migrate_simple_value(mrb_state *mrb, mrb_value v, mrb_state *mrb2) {
   return nv;
 }
 
-static void*
-mrb_thread_func(void* data) {
-  mrb_thread_context* context = (mrb_thread_context*) data;
-  mrb_state* mrb = context->mrb;
-  context->result = mrb_yield_with_class(mrb, mrb_obj_value(context->proc),
-                                         context->argc, context->argv, mrb_nil_value(), mrb->object_class);
+static void *mrb_thread_func(void *data)
+{
+  mrb_thread_context *context = (mrb_thread_context *)data;
+  mrb_state *mrb = context->mrb;
+  context->result = mrb_yield_with_class(mrb, mrb_obj_value(context->proc), context->argc,
+                                         context->argv, mrb_nil_value(), mrb->object_class);
   context->alive = FALSE;
   return NULL;
 }
 
-static mrb_value
-mrb_thread_init(mrb_state* mrb, mrb_value self) {
+static mrb_value mrb_thread_init(mrb_state *mrb, mrb_value self)
+{
   mrb_value proc = mrb_nil_value();
   mrb_int argc;
-  mrb_value* argv;
+  mrb_value *argv;
   mrb_get_args(mrb, "&*", &proc, &argv, &argc);
   if (!mrb_nil_p(proc) && MRB_PROC_CFUNC_P(mrb_proc_ptr(proc))) {
     mrb_raise(mrb, E_RUNTIME_ERROR, "forking C defined block");
   }
   if (!mrb_nil_p(proc)) {
     int i, l;
-    mrb_thread_context* context = (mrb_thread_context*) malloc(sizeof(mrb_thread_context));
+    mrb_thread_context *context = (mrb_thread_context *)malloc(sizeof(mrb_thread_context));
     context->mrb_caller = mrb;
     context->mrb = mrb_open_allocf(mrb->allocf, mrb->allocf_ud);
     migrate_all_symbols(mrb, context->mrb);
     context->proc = mrb_proc_new(mrb, mrb_proc_ptr(proc)->body.irep);
     context->proc->target_class = context->mrb->object_class;
     context->argc = argc;
-    context->argv = calloc(sizeof (mrb_value), context->argc);
+    context->argv = calloc(sizeof(mrb_value), context->argc);
     context->result = mrb_nil_value();
     context->alive = TRUE;
     for (i = 0; i < context->argc; i++) {
@@ -369,27 +361,26 @@ mrb_thread_init(mrb_state* mrb, mrb_value self) {
         mrb_value o = mrb_gv_get(mrb, mrb_symbol(k));
         if (is_safe_migratable_simple_value(mrb, o, context->mrb)) {
           const char *p = mrb_sym2name_len(mrb, mrb_symbol(k), &len);
-          mrb_gv_set(context->mrb,
-            mrb_intern_static(context->mrb, p, len),
-            migrate_simple_value(mrb, o, context->mrb));
+          mrb_gv_set(context->mrb, mrb_intern_static(context->mrb, p, len),
+                     migrate_simple_value(mrb, o, context->mrb));
         }
         mrb_gc_arena_restore(mrb, ai);
       }
     }
 
-    mrb_iv_set(mrb, self, mrb_intern_lit(mrb, "context"), mrb_obj_value(
-      Data_Wrap_Struct(mrb, mrb->object_class,
-      &mrb_thread_context_type, (void*) context)));
+    mrb_iv_set(mrb, self, mrb_intern_lit(mrb, "context"),
+               mrb_obj_value(Data_Wrap_Struct(mrb, mrb->object_class, &mrb_thread_context_type,
+                                              (void *)context)));
 
-    pthread_create(&context->thread, NULL, &mrb_thread_func, (void*) context);
+    pthread_create(&context->thread, NULL, &mrb_thread_func, (void *)context);
   }
   return self;
 }
 
-static mrb_value
-mrb_thread_join(mrb_state* mrb, mrb_value self) {
+static mrb_value mrb_thread_join(mrb_state *mrb, mrb_value self)
+{
   mrb_value value_context = mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "context"));
-  mrb_thread_context* context = NULL;
+  mrb_thread_context *context = NULL;
   Data_Get_Struct(mrb, value_context, &mrb_thread_context_type, context);
   pthread_join(context->thread, NULL);
 
@@ -399,10 +390,10 @@ mrb_thread_join(mrb_state* mrb, mrb_value self) {
   return context->result;
 }
 
-static mrb_value
-mrb_thread_kill(mrb_state* mrb, mrb_value self) {
+static mrb_value mrb_thread_kill(mrb_state *mrb, mrb_value self)
+{
   mrb_value value_context = mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "context"));
-  mrb_thread_context* context = NULL;
+  mrb_thread_context *context = NULL;
   Data_Get_Struct(mrb, value_context, &mrb_thread_context_type, context);
   if (context->mrb == NULL) {
     return mrb_nil_value();
@@ -413,17 +404,17 @@ mrb_thread_kill(mrb_state* mrb, mrb_value self) {
   return context->result;
 }
 
-static mrb_value
-mrb_thread_alive(mrb_state* mrb, mrb_value self) {
+static mrb_value mrb_thread_alive(mrb_state *mrb, mrb_value self)
+{
   mrb_value value_context = mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "context"));
-  mrb_thread_context* context = NULL;
+  mrb_thread_context *context = NULL;
   Data_Get_Struct(mrb, value_context, &mrb_thread_context_type, context);
 
   return context->alive ? mrb_true_value() : mrb_false_value();
 }
 
-static mrb_value
-mrb_thread_sleep(mrb_state* mrb, mrb_value self) {
+static mrb_value mrb_thread_sleep(mrb_state *mrb, mrb_value self)
+{
   mrb_int t;
   mrb_get_args(mrb, "i", &t);
 #ifndef _WIN32
@@ -434,9 +425,9 @@ mrb_thread_sleep(mrb_state* mrb, mrb_value self) {
   return mrb_nil_value();
 }
 
-static mrb_value
-mrb_mutex_init(mrb_state* mrb, mrb_value self) {
-  mrb_mutex_context* context = (mrb_mutex_context*) malloc(sizeof(mrb_mutex_context));
+static mrb_value mrb_mutex_init(mrb_state *mrb, mrb_value self)
+{
+  mrb_mutex_context *context = (mrb_mutex_context *)malloc(sizeof(mrb_mutex_context));
   pthread_mutex_init(&context->mutex, NULL);
   context->locked = FALSE;
   DATA_PTR(self) = context;
@@ -444,9 +435,9 @@ mrb_mutex_init(mrb_state* mrb, mrb_value self) {
   return self;
 }
 
-static mrb_value
-mrb_mutex_lock(mrb_state* mrb, mrb_value self) {
-  mrb_mutex_context* context = DATA_PTR(self);
+static mrb_value mrb_mutex_lock(mrb_state *mrb, mrb_value self)
+{
+  mrb_mutex_context *context = DATA_PTR(self);
   if (pthread_mutex_lock(&context->mutex) != 0) {
     mrb_raise(mrb, E_RUNTIME_ERROR, "cannot lock");
   }
@@ -454,9 +445,9 @@ mrb_mutex_lock(mrb_state* mrb, mrb_value self) {
   return mrb_nil_value();
 }
 
-static mrb_value
-mrb_mutex_try_lock(mrb_state* mrb, mrb_value self) {
-  mrb_mutex_context* context = DATA_PTR(self);
+static mrb_value mrb_mutex_try_lock(mrb_state *mrb, mrb_value self)
+{
+  mrb_mutex_context *context = DATA_PTR(self);
   if (pthread_mutex_trylock(&context->mutex) == 0) {
     context->locked = TRUE;
     return mrb_true_value();
@@ -464,15 +455,15 @@ mrb_mutex_try_lock(mrb_state* mrb, mrb_value self) {
   return mrb_false_value();
 }
 
-static mrb_value
-mrb_mutex_locked(mrb_state* mrb, mrb_value self) {
-  mrb_mutex_context* context = DATA_PTR(self);
+static mrb_value mrb_mutex_locked(mrb_state *mrb, mrb_value self)
+{
+  mrb_mutex_context *context = DATA_PTR(self);
   return context->locked ? mrb_true_value() : mrb_false_value();
 }
 
-static mrb_value
-mrb_mutex_unlock(mrb_state* mrb, mrb_value self) {
-  mrb_mutex_context* context = DATA_PTR(self);
+static mrb_value mrb_mutex_unlock(mrb_state *mrb, mrb_value self)
+{
+  mrb_mutex_context *context = DATA_PTR(self);
   if (pthread_mutex_unlock(&context->mutex) != 0) {
     mrb_raise(mrb, E_RUNTIME_ERROR, "cannot unlock");
   }
@@ -480,8 +471,8 @@ mrb_mutex_unlock(mrb_state* mrb, mrb_value self) {
   return mrb_nil_value();
 }
 
-static mrb_value
-mrb_mutex_sleep(mrb_state* mrb, mrb_value self) {
+static mrb_value mrb_mutex_sleep(mrb_state *mrb, mrb_value self)
+{
   mrb_int t;
   mrb_get_args(mrb, "i", &t);
 #ifndef _WIN32
@@ -492,8 +483,8 @@ mrb_mutex_sleep(mrb_state* mrb, mrb_value self) {
   return mrb_mutex_unlock(mrb, self);
 }
 
-static mrb_value
-mrb_mutex_synchronize(mrb_state* mrb, mrb_value self) {
+static mrb_value mrb_mutex_synchronize(mrb_state *mrb, mrb_value self)
+{
   mrb_value ret = mrb_nil_value();
   mrb_value proc = mrb_nil_value();
   mrb_get_args(mrb, "&", &proc);
@@ -505,9 +496,9 @@ mrb_mutex_synchronize(mrb_state* mrb, mrb_value self) {
   return ret;
 }
 
-static mrb_value
-mrb_queue_init(mrb_state* mrb, mrb_value self) {
-  mrb_queue_context* context = (mrb_queue_context*) malloc(sizeof(mrb_queue_context));
+static mrb_value mrb_queue_init(mrb_state *mrb, mrb_value self)
+{
+  mrb_queue_context *context = (mrb_queue_context *)malloc(sizeof(mrb_queue_context));
   pthread_mutex_init(&context->mutex, NULL);
   pthread_mutex_init(&context->queue_lock, NULL);
   if (pthread_mutex_lock(&context->queue_lock) != 0) {
@@ -521,38 +512,37 @@ mrb_queue_init(mrb_state* mrb, mrb_value self) {
   return self;
 }
 
-static mrb_value
-mrb_queue_lock(mrb_state* mrb, mrb_value self) {
-  mrb_queue_context* context = DATA_PTR(self);
+static mrb_value mrb_queue_lock(mrb_state *mrb, mrb_value self)
+{
+  mrb_queue_context *context = DATA_PTR(self);
   if (pthread_mutex_lock(&context->mutex) != 0) {
     mrb_raise(mrb, E_RUNTIME_ERROR, "cannot lock");
   }
   return mrb_nil_value();
 }
 
-
-static mrb_value
-mrb_queue_unlock(mrb_state* mrb, mrb_value self) {
-  mrb_queue_context* context = DATA_PTR(self);
+static mrb_value mrb_queue_unlock(mrb_state *mrb, mrb_value self)
+{
+  mrb_queue_context *context = DATA_PTR(self);
   if (pthread_mutex_unlock(&context->mutex) != 0) {
     mrb_raise(mrb, E_RUNTIME_ERROR, "cannot unlock");
   }
   return mrb_nil_value();
 }
 
-static mrb_value
-mrb_queue_clear(mrb_state* mrb, mrb_value self) {
-  mrb_queue_context* context = DATA_PTR(self);
+static mrb_value mrb_queue_clear(mrb_state *mrb, mrb_value self)
+{
+  mrb_queue_context *context = DATA_PTR(self);
   mrb_queue_lock(mrb, self);
   mrb_ary_clear(mrb, context->queue);
   mrb_queue_unlock(mrb, self);
   return mrb_nil_value();
 }
 
-static mrb_value
-mrb_queue_push(mrb_state* mrb, mrb_value self) {
+static mrb_value mrb_queue_push(mrb_state *mrb, mrb_value self)
+{
   mrb_value arg;
-  mrb_queue_context* context = DATA_PTR(self);
+  mrb_queue_context *context = DATA_PTR(self);
   mrb_queue_lock(mrb, self);
   mrb_get_args(mrb, "o", &arg);
   mrb_ary_push(context->mrb, context->queue, migrate_simple_value(mrb, arg, context->mrb));
@@ -563,10 +553,10 @@ mrb_queue_push(mrb_state* mrb, mrb_value self) {
   return mrb_nil_value();
 }
 
-static mrb_value
-mrb_queue_pop(mrb_state* mrb, mrb_value self) {
+static mrb_value mrb_queue_pop(mrb_state *mrb, mrb_value self)
+{
   mrb_value ret;
-  mrb_queue_context* context = DATA_PTR(self);
+  mrb_queue_context *context = DATA_PTR(self);
   int len;
   mrb_queue_lock(mrb, self);
   len = RARRAY_LEN(context->queue);
@@ -582,10 +572,10 @@ mrb_queue_pop(mrb_state* mrb, mrb_value self) {
   return ret;
 }
 
-static mrb_value
-mrb_queue_unshift(mrb_state* mrb, mrb_value self) {
+static mrb_value mrb_queue_unshift(mrb_state *mrb, mrb_value self)
+{
   mrb_value arg;
-  mrb_queue_context* context = DATA_PTR(self);
+  mrb_queue_context *context = DATA_PTR(self);
   mrb_queue_lock(mrb, self);
   mrb_get_args(mrb, "o", &arg);
   mrb_ary_unshift(context->mrb, context->queue, migrate_simple_value(mrb, arg, context->mrb));
@@ -596,10 +586,10 @@ mrb_queue_unshift(mrb_state* mrb, mrb_value self) {
   return mrb_nil_value();
 }
 
-static mrb_value
-mrb_queue_shift(mrb_state* mrb, mrb_value self) {
+static mrb_value mrb_queue_shift(mrb_state *mrb, mrb_value self)
+{
   mrb_value ret;
-  mrb_queue_context* context = DATA_PTR(self);
+  mrb_queue_context *context = DATA_PTR(self);
   int len;
   mrb_queue_lock(mrb, self);
   len = RARRAY_LEN(context->queue);
@@ -615,34 +605,34 @@ mrb_queue_shift(mrb_state* mrb, mrb_value self) {
   return ret;
 }
 
-static mrb_value
-mrb_queue_num_waiting(mrb_state* mrb, mrb_value self) {
+static mrb_value mrb_queue_num_waiting(mrb_state *mrb, mrb_value self)
+{
   /* TODO: multiple waiting */
   return mrb_fixnum_value(0);
 }
 
-static mrb_value
-mrb_queue_empty_p(mrb_state* mrb, mrb_value self) {
+static mrb_value mrb_queue_empty_p(mrb_state *mrb, mrb_value self)
+{
   mrb_bool ret;
-  mrb_queue_context* context = DATA_PTR(self);
+  mrb_queue_context *context = DATA_PTR(self);
   mrb_queue_lock(mrb, self);
   ret = RARRAY_LEN(context->queue) == 0;
   mrb_queue_unlock(mrb, self);
   return mrb_bool_value(ret);
 }
 
-static mrb_value
-mrb_queue_size(mrb_state* mrb, mrb_value self) {
+static mrb_value mrb_queue_size(mrb_state *mrb, mrb_value self)
+{
   mrb_int ret;
-  mrb_queue_context* context = DATA_PTR(self);
+  mrb_queue_context *context = DATA_PTR(self);
   mrb_queue_lock(mrb, self);
   ret = RARRAY_LEN(context->queue);
   mrb_queue_unlock(mrb, self);
   return mrb_fixnum_value(ret);
 }
 
-void
-mrb_mruby_thread_gem_init(mrb_state* mrb) {
+void mrb_mruby_thread_gem_init(mrb_state *mrb)
+{
   struct RClass *_class_thread, *_class_mutex, *_class_queue;
 
   _class_thread = mrb_define_class(mrb, "Thread", mrb->object_class);
@@ -686,8 +676,8 @@ mrb_mruby_thread_gem_init(mrb_state* mrb) {
   mrb_define_method(mrb, _class_queue, "empty?", mrb_queue_empty_p, MRB_ARGS_NONE());
 }
 
-void
-mrb_mruby_thread_gem_final(mrb_state* mrb) {
+void mrb_mruby_thread_gem_final(mrb_state *mrb)
+{
 }
 
 /* vim:set et ts=2 sts=2 sw=2 tw=0: */
