@@ -293,12 +293,12 @@ migrate_simple_value(mrb_state *mrb, mrb_value v, mrb_state *mrb2) {
       int i;
 
       a0 = mrb_ary_ptr(v);
-      nv = mrb_ary_new_capa(mrb2, a0->len);
+      nv = mrb_ary_new_capa(mrb2, a0->as.heap.len);
       a1 = mrb_ary_ptr(nv);
-      for (i=0; i<a0->len; i++) {
+      for (i=0; i<RARRAY_LEN(v); i++) {
         int ai = mrb_gc_arena_save(mrb2);
-        a1->ptr[i] = migrate_simple_value(mrb, a0->ptr[i], mrb2);
-        a1->len++;
+        a1->as.heap.ptr[i] = migrate_simple_value(mrb, a0->as.heap.ptr[i], mrb2);
+        a1->as.heap.len++;
         mrb_gc_arena_restore(mrb2, ai);
       }
     }
