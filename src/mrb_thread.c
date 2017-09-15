@@ -298,17 +298,21 @@ migrate_simple_value(mrb_state *mrb, mrb_value v, mrb_state *mrb2) {
 
       if (ARY_EMBED_P(a0)) {
         for (i = 0; i < ARY_EMBED_LEN(a0); i++) {
-          int ai = mrb_gc_arena_save(mrb2);
+          int ai = mrb_gc_arena_save(mrb);
+          int ai2 = mrb_gc_arena_save(mrb2);
           a1->as.embed[i] = migrate_simple_value(mrb, a0->as.embed[i], mrb2);
-          mrb_gc_arena_restore(mrb2, ai);
+          mrb_gc_arena_restore(mrb2, ai2);
+          mrb_gc_arena_restore(mrb, ai);
         }
       } else {
         for (i = 0; i < RARRAY_LEN(v); i++) {
-          int ai = mrb_gc_arena_save(mrb2);
+          int ai = mrb_gc_arena_save(mrb);
+          int ai2 = mrb_gc_arena_save(mrb2);
           a1->as.heap.ptr[i] =
             migrate_simple_value(mrb, a0->as.heap.ptr[i], mrb2);
           a1->as.heap.len++;
-          mrb_gc_arena_restore(mrb2, ai);
+          mrb_gc_arena_restore(mrb2, ai2);
+          mrb_gc_arena_restore(mrb, ai);
         }
       }
     }
