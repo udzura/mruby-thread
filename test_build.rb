@@ -13,11 +13,14 @@ end
 
 MRuby::Build.new do |conf|
   MRBGEMS_ROOT = "/usr/local/mrblib"
-  toolchain :clang
+  toolchain :gcc
   conf.cc.defines += %w(ENABLE_READLINE)
+  conf.cc.defines += %w(MRB_THREAD_COPY_VALUES)
   conf.cc.include_paths << %w(/usr/local/include)
   conf.linker.library_paths << %w(/usr/local/lib)
   conf.linker.libraries << ['pthread']
   conf.gembox 'default'
   conf.gem File.dirname(__FILE__)
+
+  conf.enable_test
 end

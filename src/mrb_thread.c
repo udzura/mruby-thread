@@ -112,9 +112,9 @@ migrate_sym(mrb_state *mrb, mrb_sym sym, mrb_state *mrb2)
 static void
 migrate_all_symbols(mrb_state *mrb, mrb_state *mrb2)
 {
-  mrb_sym i;
-  for (i = 1; i < mrb->symidx + 1; i++) {
-    migrate_sym(mrb, i, mrb2);
+  mrb_sym i, lim;
+  for (i=1, lim=mrb->symidx+1; i<lim; i++) {
+    (void)migrate_sym(mrb, i, mrb2);
   }
 }
 
@@ -403,7 +403,6 @@ mrb_symbol_safe_copy(mrb_state *mrb_src) {
 
   /* As mrb_init_core do but copy symbols before library initialization */
   mrb_init_symtbl(mrb); DONE;
-
   migrate_all_symbols(mrb_src, mrb); DONE;
 
   mrb_init_class(mrb); DONE;
@@ -413,6 +412,7 @@ mrb_symbol_safe_copy(mrb_state *mrb_src) {
   mrb_init_enumerable(mrb); DONE;
 
   mrb_init_symbol(mrb); DONE;
+
   mrb_init_exception(mrb); DONE;
   mrb_init_proc(mrb); DONE;
   mrb_init_string(mrb); DONE;
