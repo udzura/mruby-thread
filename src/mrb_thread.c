@@ -413,11 +413,10 @@ mrb_symbol_safe_copy(mrb_state *mrb_src) {
   mrb->c = (struct mrb_context *)mrb_malloc(mrb, sizeof(struct mrb_context));
   *mrb->c = mrb_context_zero;
   mrb->root_c = mrb->c;
+  mrb->gc.disabled = TRUE;
 
   /* As mrb_init_core do but copy symbols before library initialization */
   mrb_init_symtbl(mrb); DONE;
-  migrate_all_symbols(mrb_src, mrb); DONE;
-  mrb->gc.disabled = TRUE;
 
   mrb_init_class(mrb); DONE;
   mrb_init_object(mrb); DONE;
@@ -437,6 +436,7 @@ mrb_symbol_safe_copy(mrb_state *mrb_src) {
   mrb_init_gc(mrb); DONE;
   mrb_init_version(mrb); DONE;
   mrb_init_mrblib(mrb); DONE;
+  migrate_all_symbols(mrb_src, mrb); DONE;
 
 #ifndef DISABLE_GEMS
   mrb_init_mrbgems(mrb); DONE;
