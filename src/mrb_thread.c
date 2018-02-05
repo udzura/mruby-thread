@@ -417,13 +417,13 @@ mrb_symbol_safe_copy(mrb_state *mrb_src) {
 
   /* As mrb_init_core do but copy symbols before library initialization */
   mrb_init_symtbl(mrb); DONE;
+  migrate_all_symbols(mrb_src, mrb); DONE;
 
   mrb_init_class(mrb); DONE;
   mrb_init_object(mrb); DONE;
   mrb_init_kernel(mrb); DONE;
   mrb_init_comparable(mrb); DONE;
   mrb_init_enumerable(mrb); DONE;
-
   mrb_init_symbol(mrb); DONE;
 
   mrb_init_exception(mrb); DONE;
@@ -436,7 +436,6 @@ mrb_symbol_safe_copy(mrb_state *mrb_src) {
   mrb_init_gc(mrb); DONE;
   mrb_init_version(mrb); DONE;
   mrb_init_mrblib(mrb); DONE;
-  migrate_all_symbols(mrb_src, mrb); DONE;
 
 #ifndef DISABLE_GEMS
   mrb_init_mrbgems(mrb); DONE;
