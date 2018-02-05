@@ -41,9 +41,15 @@ See also https://github.com/mruby/mruby/commit/79a621dd739faf4cc0958e11d6a887331
 # define _MRB_PROC_ENV(p) (p)->env
 #endif
 
-#ifndef MRB_PROC_SET_TARGET_CLASS
-# define MRB_PROC_SET_TARGET_CLASS(p,tc) \
-  p->target_class = tc
+#ifndef MRB_PROC_SET_TARGET_CLASS_NO_BARRIER
+# define MRB_PROC_SET_TARGET_CLASS_NO_BARRIER(p,tc) do {\
+  if (MRB_PROC_ENV_P(p)) {\
+    (p)->e.env->c = (tc);\
+  }\
+  else {\
+    (p)->e.target_class = (tc);\
+  }\
+} while (0)
 #endif
 
 typedef struct {
@@ -450,15 +456,20 @@ mrb_thread_init(mrb_state* mrb, mrb_value self) {
   mrb_int argc;
   mrb_value* argv;
   mrb_get_args(mrb, "&*", &proc, &argv, &argc);
+  mrb->gc.disabled = TRUE;
+  
   if (!mrb_nil_p(proc) && MRB_PROC_CFUNC_P(mrb_proc_ptr(proc))) {
     mrb_raise(mrb, E_RUNTIME_ERROR, "forking C defined block");
   }
   if (!mrb_nil_p(proc)) {
-    int i, l;
+    int i, l, ai;
     mrb_thread_context* context = (mrb_thread_context*) malloc(sizeof(mrb_thread_context));
     mrb_state* mrb2;
     struct RProc *rproc;
 
+    mrb_gc_protect(mrb, proc);
+    
+    ai = mrb_gc_arena_save(mrb);
     context->mrb_caller = mrb;
     mrb2 = mrb_symbol_safe_copy(mrb);
     if(!mrb2) {
@@ -467,14 +478,20 @@ mrb_thread_init(mrb_state* mrb, mrb_value self) {
     context->mrb = mrb2;
     rproc = mrb_proc_ptr(proc);
     context->proc = migrate_rproc(mrb, rproc, mrb2);
-    MRB_PROC_SET_TARGET_CLASS(context->proc, context->mrb->object_class);
+    MRB_PROC_SET_TARGET_CLASS_NO_BARRIER(context->proc, context->mrb->object_class);
     context->argc = argc;
     context->argv = calloc(sizeof (mrb_value), context->argc);
     context->result = mrb_nil_value();
     context->alive = TRUE;
+    mrb_gc_arena_restore(mrb, ai);
+
     for (i = 0; i < context->argc; i++) {
+      int ai = mrb_gc_arena_save(mrb);
       context->argv[i] = migrate_simple_value(mrb, argv[i], context->mrb);
+      mrb_gc_arena_restore(mrb, ai);
+      mrb_gc_protect(mrb, argv[i]);
     }
+
 
     {
       mrb_value gv = mrb_funcall(mrb, self, "global_variables", 0, NULL);
