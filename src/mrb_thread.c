@@ -9,6 +9,7 @@
 #include <mruby/value.h>
 #include <mruby/variable.h>
 #include <mruby/dump.h>
+#include <mruby/gc.h>
 #include <string.h>
 #ifndef _MSC_VER
 #include <strings.h>
@@ -416,6 +417,7 @@ mrb_symbol_safe_copy(mrb_state *mrb_src) {
   /* As mrb_init_core do but copy symbols before library initialization */
   mrb_init_symtbl(mrb); DONE;
   migrate_all_symbols(mrb_src, mrb); DONE;
+  mrb->gc.disabled = TRUE;
 
   mrb_init_class(mrb); DONE;
   mrb_init_object(mrb); DONE;
